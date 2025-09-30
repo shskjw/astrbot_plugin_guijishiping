@@ -10,16 +10,20 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 
 import aiohttp
-from astrbot import logger
+import aiofiles
+from astrbot.api import logger
 from astrbot.api.event import filter
-from astrbot.api.star import Context, Star, register, StarTools
+from astrbot.api.star import Context, Star, StarTools
 from astrbot.core import AstrBotConfig
 import astrbot.api.message_components as Comp
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 
-
-@register("astrbot_plugin_guijishiping", "shskjw", "硅基流动api视频", "1.0.0") 
 class SiliconflowPlugin(Star):
+    """
+    astrbot_plugin_guijishiping by shskjw
+    Version: 1.0.0
+    Description: 硅基流动api视频，可以制作动态壁纸之类的
+    """
     class APIClient:
         def __init__(self, proxy_url: Optional[str] = None):
             self.proxy = proxy_url
@@ -33,7 +37,7 @@ class SiliconflowPlugin(Star):
                     resp.raise_for_status()
                     return await resp.read()
             except Exception as e:
-                logger.error(f"[SiliconFlow] 图片下载失败: {e}")
+                logger.error(f"[SiliconFlow] 图片下载失败: {e}", exc_info=True)
                 return None
 
         async def _load_bytes(self, src: str) -> Optional[bytes]:
@@ -89,13 +93,13 @@ class SiliconflowPlugin(Star):
             content = self.user_counts_file.read_text("utf-8")
             self.user_counts = {str(k): v for k, v in json.loads(content).items()}
         except Exception as e:
-            logger.error(f"加载用户次数文件时发生错误: {e}")
+            logger.error(f"加载用户次数文件时发生错误: {e}", exc_info=True)
 
     async def _save_user_counts(self):
         try:
             self.user_counts_file.write_text(json.dumps(self.user_counts, ensure_ascii=False, indent=4), "utf-8")
         except Exception as e:
-            logger.error(f"保存用户次数文件时发生错误: {e}")
+            logger.error(f"保存用户次数文件时发生错误: {e}", exc_info=True)
 
     def _get_user_count(self, user_id: str) -> int:
         return self.user_counts.get(str(user_id), 0)
@@ -110,13 +114,13 @@ class SiliconflowPlugin(Star):
             content = self.group_counts_file.read_text("utf-8")
             self.group_counts = {str(k): v for k, v in json.loads(content).items()}
         except Exception as e:
-            logger.error(f"加载群组次数文件时发生错误: {e}")
+            logger.error(f"加载群组次数文件时发生错误: {e}", exc_info=True)
 
     async def _save_group_counts(self):
         try:
             self.group_counts_file.write_text(json.dumps(self.group_counts, ensure_ascii=False, indent=4), "utf-8")
         except Exception as e:
-            logger.error(f"保存群组次数文件时发生错误: {e}")
+            logger.error(f"保存群组次数文件时发生错误: {e}", exc_info=True)
 
     def _get_group_count(self, group_id: str) -> int:
         return self.group_counts.get(str(group_id), 0)
@@ -125,26 +129,24 @@ class SiliconflowPlugin(Star):
         count = self._get_group_count(str(group_id))
         if count > 0: self.group_counts[str(group_id)] = count - 1; await self._save_group_counts()
 
-    def _download_video_with_requests_to_disk(self, url: str) -> Optional[str]:
-        import requests
+    async def _download_video_async(self, url: str) -> Optional[str]:
         filename = f"siliconflow_video_{uuid.uuid4()}.mp4"
         filepath = self.plugin_data_dir / filename
-        logger.info(f"开始使用 requests 下载视频到: {filepath}")
+        logger.info(f"开始异步下载视频到: {filepath}")
         try:
-            response = requests.get(url, stream=True, timeout=300)
-            if response.status_code == 200:
-                with open(filepath, 'wb') as file:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk: file.write(chunk)
-                logger.info(f"视频已下载保存为: {filename}")
-                return str(filepath)
-            else:
-                logger.error(f"下载失败，状态码: {response.status_code}")
-                return None
+            async with self.api_client.session.get(url, timeout=300) as resp:
+                resp.raise_for_status()
+                async with aiofiles.open(filepath, 'wb') as f:
+                    async for chunk in resp.content.iter_chunked(8192):
+                        await f.write(chunk)
+            logger.info(f"视频已下载保存为: {filename}")
+            return str(filepath)
         except Exception as e:
-            logger.error(f"使用 requests 下载时发生异常: {e}")
+            logger.error(f"异步下载视频时发生异常: {e}", exc_info=True)
+            if os.path.exists(filepath): os.remove(filepath)
             return None
 
+    # --- 管理指令 ---
     @filter.command("视频增加用户次数", prefix_optional=True)
     async def on_add_user_counts(self, event: AstrMessageEvent):
         if not self.is_global_admin(event): return
@@ -193,27 +195,23 @@ class SiliconflowPlugin(Star):
             self.key_index = (self.key_index + 1) % len(keys)
             return key
 
-    async def _submit_task(self, prompt: str, image_bytes: Optional[bytes], num_frames: int) -> Tuple[
-        Optional[str], str]:
+    # --- API 调用 ---
+    async def _submit_task(self, prompt: str, image_bytes: Optional[bytes], num_frames: int) -> Tuple[Optional[str], str]:
         api_url = self.conf.get("api_url", "https://api.siliconflow.cn")
         api_key = await self._get_api_key()
         if not api_key: return None, "无可用的 API Key"
         headers = {"Authorization": f"Bearer {api_key}"}
-        payload = {"model": self.conf.get("default_model"), "prompt": prompt,
-                   "negative_prompt": "low quality, bad quality, blurry", "steps": 25, "guidance_scale": 7,
-                   "num_frames": num_frames}
+        payload = {"model": self.conf.get("default_model"),"prompt": prompt, "negative_prompt": "low quality, bad quality, blurry","steps": 25, "guidance_scale": 7, "num_frames": num_frames}
         if image_bytes:
             payload["image"] = base64.b64encode(image_bytes).decode("utf-8")
             payload["motion_bucket_id"] = 127
             payload["cond_aug"] = 0.02
         try:
-            async with self.api_client.session.post(f"{api_url}/v1/video/submit", json=payload, headers=headers,
-                                                    proxy=self.api_client.proxy, timeout=60) as resp:
+            async with self.api_client.session.post(f"{api_url}/v1/video/submit", json=payload, headers=headers, proxy=self.api_client.proxy, timeout=60) as resp:
                 data = await resp.json()
                 if resp.status != 200: return None, f"任务提交失败: {data.get('error', {}).get('message', str(data))}"
                 return data.get("requestId"), "提交成功"
-        except Exception as e:
-            return None, f"网络错误: {e}"
+        except Exception as e: return None, f"网络错误: {e}"
 
     async def _poll_for_result(self, request_id: str) -> Tuple[Optional[str], str]:
         api_url = self.conf.get("api_url", "https://api.siliconflow.cn")
@@ -226,23 +224,19 @@ class SiliconflowPlugin(Star):
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
             payload = {"requestId": request_id}
             try:
-                async with self.api_client.session.post(f"{api_url}/v1/video/status", json=payload, headers=headers,
-                                                        proxy=self.api_client.proxy, timeout=30) as resp:
+                async with self.api_client.session.post(f"{api_url}/v1/video/status", json=payload, headers=headers, proxy=self.api_client.proxy, timeout=30) as resp:
                     if resp.status != 200: await asyncio.sleep(interval); continue
                     data = await resp.json()
                     status = data.get("status")
                     if status in ["Succeed", "completed"]:
-                        video_url = data.get("results", {}).get("videos", [{}])[0].get("url") if data.get(
-                            "results") else data.get("video_url")
-                        if video_url:
-                            return video_url, "生成成功"
-                        else:
-                            logger.error(
-                                f"[SiliconFlow] 成功响应但未找到视频链接: {json.dumps(data)}"); return None, "成功响应但未找到视频链接"
+                        video_url = data.get("results", {}).get("videos", [{}])[0].get("url") if data.get("results") else data.get("video_url")
+                        if video_url: return video_url, "生成成功"
+                        else: logger.error(f"[SiliconFlow] 成功响应但未找到视频链接: {json.dumps(data)}"); return None, "成功响应但未找到视频链接"
                     elif status in ["Failed", "failed"]:
                         return None, f"任务生成失败: {data.get('reason', data.get('error', '未知错误'))}"
                     await asyncio.sleep(interval)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"[SiliconFlow] 轮询状态时发生异常: {e}", exc_info=True)
                 await asyncio.sleep(interval)
         return None, "任务超时"
 
@@ -269,8 +263,7 @@ class SiliconflowPlugin(Star):
         if not is_master:
             if self.conf.get("user_blacklist", []) and sender_id in self.conf.get("user_blacklist", []): return
             if self.conf.get("user_whitelist", []) and sender_id not in self.conf.get("user_whitelist", []): return
-            if group_id and self.conf.get("group_whitelist", []) and group_id not in self.conf.get("group_whitelist",
-                                                                                                   []): return
+            if group_id and self.conf.get("group_whitelist", []) and group_id not in self.conf.get("group_whitelist",[]): return
             user_limit_on = self.conf.get("enable_user_limit", True)
             group_limit_on = self.conf.get("enable_group_limit", False) and group_id
             user_count = self._get_user_count(sender_id)
@@ -279,27 +272,24 @@ class SiliconflowPlugin(Star):
             has_user_permission = not user_limit_on or user_count > 0
             if group_id:
                 if not has_group_permission and not has_user_permission:
-                    yield event.plain_result("❌ 本群次数与您的个人次数均已用尽，请联系管理员补充。");
-                    return
+                    yield event.plain_result("❌ 本群次数与您的个人次数均已用尽，请联系管理员补充。"); return
             else:
                 if not has_user_permission:
-                    yield event.plain_result("❌ 您的使用次数已用完，请联系管理员补充。");
-                    return
+                    yield event.plain_result("❌ 您的使用次数已用完，请联系管理员补充。"); return
 
         image_bytes = await self.api_client.get_image_from_event(event)
-        yield event.plain_result(
-            f"✅ 任务已提交 ({'图生视频' if image_bytes else '文生视频'}, 期望 {seconds}秒 @ {DEFAULT_FPS}fps)，正在排队生成...")
-
+        yield event.plain_result(f"✅ 任务已提交 ({'图生视频' if image_bytes else '文生视频'}, 期望 {seconds}秒 @ {DEFAULT_FPS}fps)，正在排队生成...")
+        
         request_id, error_msg = await self._submit_task(prompt, image_bytes, num_frames)
         if not request_id: yield event.plain_result(f"❌ 提交失败: {error_msg}"); return
 
         video_url, status_msg = await self._poll_for_result(request_id)
         if not video_url: yield event.plain_result(f"❌ 处理失败: {status_msg}"); return
-
+            
         yield event.plain_result("✅ 生成成功，正在下载视频到本地...")
-        filepath = await asyncio.to_thread(self._download_video_with_requests_to_disk, video_url)
+        filepath = await self._download_video_async(video_url)
         if not filepath: yield event.plain_result(f"❌ 视频下载失败，请尝试手动下载:\n{video_url}"); return
-
+        
         yield event.plain_result("✅ 下载完成，正在发送文件...")
 
         if not is_master:
@@ -321,11 +311,8 @@ class SiliconflowPlugin(Star):
                 logger.info(f"已清理临时文件: {filepath}")
 
         caption_parts = []
-        if is_master:
-            caption_parts.append("剩余次数: ∞")
+        if is_master: caption_parts.append("剩余次数: ∞")
         else:
-            if self.conf.get("enable_user_limit", True): caption_parts.append(
-                f"个人剩余: {self._get_user_count(sender_id)}")
-            if self.conf.get("enable_group_limit", False) and group_id: caption_parts.append(
-                f"本群剩余: {self._get_group_count(group_id)}")
+            if self.conf.get("enable_user_limit", True): caption_parts.append(f"个人剩余: {self._get_user_count(sender_id)}")
+            if self.conf.get("enable_group_limit", False) and group_id: caption_parts.append(f"本群剩余: {self._get_group_count(group_id)}")
         if caption_parts: yield event.plain_result(" | ".join(caption_parts))
