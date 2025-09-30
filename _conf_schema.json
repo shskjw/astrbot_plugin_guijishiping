@@ -16,7 +16,7 @@
         "description": "默认使用的视频生成模型",
         "type": "string",
         "hint": "例如：Wan-AI/Wan2.2-I2V-A14B",
-        "default": "stabilityai/stable-video-diffusion-img2vid-xt"
+        "default": "Wan-AI/Wan2.2-I2V-A14B"
     },
     "use_proxy": {
         "description": "是否启用网络代理",
@@ -73,4 +73,5 @@
         "items": { "type": "string", "description": "群号" },
         "default": []
     }
+
 }
