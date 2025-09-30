@@ -1,3 +1,4 @@
+# 视频下载传输有问题，目前只能通过OSS存储桶链接进行下载（手动部署可能可以成功下载，docker用户不一定，不是非常影响使用）
 # AstrBot SiliconFlow 视频生成插件
 
 本插件允许您的 AstrBot 接入 [SiliconFlow](https://siliconflow.cn/) API，提供强大的 **文生视频** 和 **图生视频** 功能。
