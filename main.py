@@ -92,55 +92,61 @@ class SiliconflowPlugin(Star):
 
     # --- 次数管理 ---
     async def _load_user_counts(self):
-        if not self.user_counts_file.exists():
+        if not await aiofiles.os.path.exists(self.user_counts_file):
             self.user_counts = {}
             return
         try:
-            content = self.user_counts_file.read_text("utf-8")
+            async with aiofiles.open(self.user_counts_file, mode='r', encoding='utf-8') as f:
+                content = await f.read()
             self.user_counts = {str(k): v for k, v in json.loads(content).items()}
         except Exception as e:
             logger.error(f"加载用户次数文件时发生错误: {e}", exc_info=True)
+            self.user_counts = {}
 
     async def _save_user_counts(self):
         try:
-            self.user_counts_file.write_text(json.dumps(self.user_counts, ensure_ascii=False, indent=4), "utf-8")
+            async with aiofiles.open(self.user_counts_file, mode='w', encoding='utf-8') as f:
+                await f.write(json.dumps(self.user_counts, ensure_ascii=False, indent=4))
         except Exception as e:
             logger.error(f"保存用户次数文件时发生错误: {e}", exc_info=True)
 
     def _get_user_count(self, user_id: str) -> int:
-        return self.user_counts.get(str(user_id), 0)
+        return self.user_counts.get(user_id, 0)  # 【修复 3】移除冗余的 str()
 
     async def _decrease_user_count(self, user_id: str):
         async with self.count_lock:
-            count = self._get_user_count(str(user_id))
+            count = self._get_user_count(user_id)  # 【修复 3】移除冗余的 str()
             if count > 0:
-                self.user_counts[str(user_id)] = count - 1
+                self.user_counts[user_id] = count - 1  # 【修复 3】移除冗余的 str()
                 await self._save_user_counts()
 
     async def _load_group_counts(self):
-        if not self.group_counts_file.exists():
+        if not await aiofiles.os.path.exists(self.group_counts_file):
             self.group_counts = {}
             return
         try:
-            content = self.group_counts_file.read_text("utf-8")
+            async with aiofiles.open(self.group_counts_file, mode='r', encoding='utf-8') as f:
+                content = await f.read()
             self.group_counts = {str(k): v for k, v in json.loads(content).items()}
         except Exception as e:
             logger.error(f"加载群组次数文件时发生错误: {e}", exc_info=True)
+            self.group_counts = {}
 
     async def _save_group_counts(self):
         try:
-            self.group_counts_file.write_text(json.dumps(self.group_counts, ensure_ascii=False, indent=4), "utf-8")
+            async with aiofiles.open(self.group_counts_file, mode='w', encoding='utf-8') as f:
+                await f.write(json.dumps(self.group_counts, ensure_ascii=False, indent=4))
         except Exception as e:
             logger.error(f"保存群组次数文件时发生错误: {e}", exc_info=True)
 
     def _get_group_count(self, group_id: str) -> int:
-        return self.group_counts.get(str(group_id), 0)
+        return self.group_counts.get(group_id, 0)  # 【修复 3】移除冗余的 str()
 
     async def _decrease_group_count(self, group_id: str):
         async with self.count_lock:
-            count = self._get_group_count(str(group_id))
+            count = self._get_group_count(group_id)  # 【修复 3】移除冗余的 str()
             if count > 0:
-                self.group_counts[str(group_id)] = count - 1
+                self.group_counts[group_id] = count - 1  # 【修复 3】移除冗余的 str()
                 await self._save_group_counts()
 
     # --- 异步下载 ---
@@ -170,7 +176,7 @@ class SiliconflowPlugin(Star):
         if not match: yield event.plain_result('格式错误: #视频增加用户次数 <QQ号> <次数>'); return
         target_qq, count = match.group(1), int(match.group(2))
         current_count = self._get_user_count(target_qq)
-        self.user_counts[str(target_qq)] = current_count + count
+        self.user_counts[target_qq] = current_count + count  # 【修复 3】移除冗余的 str()
         await self._save_user_counts()
         yield event.plain_result(f"✅ 已为用户 {target_qq} 增加 {count} 次，TA当前剩余 {current_count + count} 次。")
 
@@ -181,7 +187,7 @@ class SiliconflowPlugin(Star):
         if not match: yield event.plain_result('格式错误: #视频增加群组次数 <群号> <次数>'); return
         target_group, count = match.group(1), int(match.group(2))
         current_count = self._get_group_count(target_group)
-        self.group_counts[str(target_group)] = current_count + count
+        self.group_counts[target_group] = current_count + count  # 【修复 3】移除冗余的 str()
         await self._save_group_counts()
         yield event.plain_result(f"✅ 已为群组 {target_group} 增加 {count} 次，该群当前剩余 {current_count + count} 次。")
 
@@ -235,13 +241,16 @@ class SiliconflowPlugin(Star):
             return None, f"网络错误: {e}"
 
     async def _poll_for_result(self, request_id: str) -> Tuple[Optional[str], str]:
+        api_key = await self._get_api_key()
+        if not api_key:
+            return None, "无可用的 API Key"
+
         api_url = self.conf.get("api_url", "https://api.siliconflow.cn")
         timeout = self.conf.get("polling_timeout", 300)
         interval = self.conf.get("polling_interval", 5)
         start_time = time.time()
+
         while time.time() - start_time < timeout:
-            api_key = await self._get_api_key()
-            if not api_key: await asyncio.sleep(interval); continue
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
             payload = {"requestId": request_id}
             try:
@@ -333,6 +342,7 @@ class SiliconflowPlugin(Star):
         yield event.plain_result("✅ 下载完成，正在发送文件...")
 
         if not self.is_global_admin(event):
+            # 恢复优先扣除群组次数的逻辑
             if self.conf.get("enable_group_limit", False) and group_id and self._get_group_count(group_id) > 0:
                 await self._decrease_group_count(group_id)
             elif self.conf.get("enable_user_limit", True) and self._get_user_count(sender_id) > 0:
@@ -341,7 +351,6 @@ class SiliconflowPlugin(Star):
         try:
             video_component = Comp.Video.fromFileSystem(path=filepath, name="generated_video.mp4")
 
-            # 构建附加的文本信息
             caption_parts = []
             if self.is_global_admin(event):
                 caption_parts.append("剩余次数: ∞")
