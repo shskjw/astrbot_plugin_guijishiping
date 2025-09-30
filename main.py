@@ -11,17 +11,17 @@ from typing import Dict, Any, Optional, Tuple
 
 import aiohttp
 import aiofiles
+import aiofiles.os
 from astrbot.api import logger
 from astrbot.api.event import filter
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core import AstrBotConfig
 import astrbot.api.message_components as Comp
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
-
 class SiliconflowPlugin(Star):
     """
     astrbot_plugin_guijishiping by shskjw
-    Version: 1.0.0
+    Version: 1.0.0 (Refactored)
     Description: 硅基流动api视频，可以制作动态壁纸之类的
     """
     class APIClient:
@@ -131,7 +131,7 @@ class SiliconflowPlugin(Star):
 
     async def _download_video_async(self, url: str) -> Optional[str]:
         filename = f"siliconflow_video_{uuid.uuid4()}.mp4"
-        filepath = self.plugin_data_dir / filename
+        filepath = str(self.plugin_data_dir / filename) # 转换为str
         logger.info(f"开始异步下载视频到: {filepath}")
         try:
             async with self.api_client.session.get(url, timeout=300) as resp:
@@ -140,10 +140,11 @@ class SiliconflowPlugin(Star):
                     async for chunk in resp.content.iter_chunked(8192):
                         await f.write(chunk)
             logger.info(f"视频已下载保存为: {filename}")
-            return str(filepath)
+            return filepath
         except Exception as e:
             logger.error(f"异步下载视频时发生异常: {e}", exc_info=True)
-            if os.path.exists(filepath): os.remove(filepath)
+            if await aiofiles.os.path.exists(filepath):
+                await aiofiles.os.remove(filepath)
             return None
 
     # --- 管理指令 ---
@@ -229,16 +230,64 @@ class SiliconflowPlugin(Star):
                     data = await resp.json()
                     status = data.get("status")
                     if status in ["Succeed", "completed"]:
-                        video_url = data.get("results", {}).get("videos", [{}])[0].get("url") if data.get("results") else data.get("video_url")
-                        if video_url: return video_url, "生成成功"
-                        else: logger.error(f"[SiliconFlow] 成功响应但未找到视频链接: {json.dumps(data)}"); return None, "成功响应但未找到视频链接"
+                        video_url = None
+                        if results := data.get("results"):
+                            if videos := results.get("videos"):
+                                if isinstance(videos, list) and len(videos) > 0 and isinstance(videos[0], dict):
+                                    video_url = videos[0].get("url")
+                        
+                        if not video_url:
+                            video_url = data.get("video_url")  # Fallback
+                        
+                        if video_url: 
+                            return video_url, "生成成功"
+                        else: 
+                            logger.error(f"[SiliconFlow] 成功响应但未找到视频链接: {json.dumps(data)}"); return None, "成功响应但未找到视频链接"
                     elif status in ["Failed", "failed"]:
                         return None, f"任务生成失败: {data.get('reason', data.get('error', '未知错误'))}"
                     await asyncio.sleep(interval)
+            # 捕获异常时记录详细信息
             except Exception as e:
                 logger.warning(f"[SiliconFlow] 轮询状态时发生异常: {e}", exc_info=True)
                 await asyncio.sleep(interval)
         return None, "任务超时"
+
+    async def _check_permissions(self, event: AstrMessageEvent) -> Tuple[bool, Optional[str]]:
+        """检查用户是否有权限执行操作，返回 (是否通过, 错误信息)"""
+        if self.is_global_admin(event):
+            return True, None
+
+        sender_id = event.get_sender_id()
+        group_id = event.get_group_id()
+
+        # 黑名单检查
+        if self.conf.get("user_blacklist", []) and sender_id in self.conf.get("user_blacklist", []):
+            return False, None # 黑名单用户静默失败
+        if group_id and self.conf.get("group_whitelist", []) and group_id not in self.conf.get("group_whitelist", []):
+            return False, None # 非白名单群聊静默失败
+        
+        # 白名单检查
+        if self.conf.get("user_whitelist", []) and sender_id not in self.conf.get("user_whitelist", []):
+            return False, "抱歉，您不在本功能的使用白名单中。"
+
+        # 次数检查
+        user_limit_on = self.conf.get("enable_user_limit", True)
+        group_limit_on = self.conf.get("enable_group_limit", False) and group_id
+        user_count = self._get_user_count(sender_id)
+        group_count = self._get_group_count(group_id) if group_id else 0
+
+        has_group_permission = not group_limit_on or group_count > 0
+        has_user_permission = not user_limit_on or user_count > 0
+
+        if group_id:
+            if not has_group_permission and not has_user_permission:
+                return False, "❌ 本群次数与您的个人次数均已用尽，请联系管理员补充。"
+        else: # 私聊
+            if not has_user_permission:
+                return False, "❌ 您的使用次数已用完，请联系管理员补充。"
+        
+        return True, None
+
 
     # --- 核心指令 ---
     @filter.command("生成视频", prefix_optional=True)
@@ -256,26 +305,14 @@ class SiliconflowPlugin(Star):
         num_frames = seconds * DEFAULT_FPS
         if not prompt: yield event.plain_result("🤔 用法: #生成视频 [--s 秒数] <提示词> [图片]"); return
 
+        can_proceed, error_message = await self._check_permissions(event)
+        if not can_proceed:
+            if error_message: # 如果有错误信息，则发送
+                yield event.plain_result(error_message)
+            return
+
         sender_id = event.get_sender_id()
         group_id = event.get_group_id()
-        is_master = self.is_global_admin(event)
-
-        if not is_master:
-            if self.conf.get("user_blacklist", []) and sender_id in self.conf.get("user_blacklist", []): return
-            if self.conf.get("user_whitelist", []) and sender_id not in self.conf.get("user_whitelist", []): return
-            if group_id and self.conf.get("group_whitelist", []) and group_id not in self.conf.get("group_whitelist",[]): return
-            user_limit_on = self.conf.get("enable_user_limit", True)
-            group_limit_on = self.conf.get("enable_group_limit", False) and group_id
-            user_count = self._get_user_count(sender_id)
-            group_count = self._get_group_count(group_id) if group_id else 0
-            has_group_permission = not group_limit_on or group_count > 0
-            has_user_permission = not user_limit_on or user_count > 0
-            if group_id:
-                if not has_group_permission and not has_user_permission:
-                    yield event.plain_result("❌ 本群次数与您的个人次数均已用尽，请联系管理员补充。"); return
-            else:
-                if not has_user_permission:
-                    yield event.plain_result("❌ 您的使用次数已用完，请联系管理员补充。"); return
 
         image_bytes = await self.api_client.get_image_from_event(event)
         yield event.plain_result(f"✅ 任务已提交 ({'图生视频' if image_bytes else '文生视频'}, 期望 {seconds}秒 @ {DEFAULT_FPS}fps)，正在排队生成...")
@@ -292,7 +329,7 @@ class SiliconflowPlugin(Star):
         
         yield event.plain_result("✅ 下载完成，正在发送文件...")
 
-        if not is_master:
+        if not self.is_global_admin(event):
             if self.conf.get("enable_group_limit", False) and group_id and self._get_group_count(group_id) > 0:
                 await self._decrease_group_count(group_id)
             elif self.conf.get("enable_user_limit", True) and self._get_user_count(sender_id) > 0:
@@ -306,11 +343,12 @@ class SiliconflowPlugin(Star):
             logger.error(f"发送文件时失败: {e}", exc_info=True)
             yield event.plain_result(f"🎬 文件发送失败，请点击链接下载：\n{video_url}")
         finally:
-            if os.path.exists(filepath):
-                os.remove(filepath)
+            if await aiofiles.os.path.exists(filepath):
+                await aiofiles.os.remove(filepath)
                 logger.info(f"已清理临时文件: {filepath}")
 
         caption_parts = []
+        is_master = self.is_global_admin(event)
         if is_master: caption_parts.append("剩余次数: ∞")
         else:
             if self.conf.get("enable_user_limit", True): caption_parts.append(f"个人剩余: {self._get_user_count(sender_id)}")
