@@ -77,6 +77,7 @@ class SiliconflowPlugin(Star):
         self.group_counts: Dict[str, int] = {}
         self.key_index = 0
         self.key_lock = asyncio.Lock()
+        self.count_lock = asyncio.Lock()
         self.api_client: Optional[SiliconflowPlugin.APIClient] = None
 
     async def initialize(self):
@@ -91,7 +92,9 @@ class SiliconflowPlugin(Star):
 
     # --- 次数管理 ---
     async def _load_user_counts(self):
-        if not self.user_counts_file.exists(): self.user_counts = {}; return
+        if not self.user_counts_file.exists():
+            self.user_counts = {}
+            return
         try:
             content = self.user_counts_file.read_text("utf-8")
             self.user_counts = {str(k): v for k, v in json.loads(content).items()}
@@ -108,11 +111,16 @@ class SiliconflowPlugin(Star):
         return self.user_counts.get(str(user_id), 0)
 
     async def _decrease_user_count(self, user_id: str):
-        count = self._get_user_count(str(user_id))
-        if count > 0: self.user_counts[str(user_id)] = count - 1; await self._save_user_counts()
+        async with self.count_lock:
+            count = self._get_user_count(str(user_id))
+            if count > 0:
+                self.user_counts[str(user_id)] = count - 1
+                await self._save_user_counts()
 
     async def _load_group_counts(self):
-        if not self.group_counts_file.exists(): self.group_counts = {}; return
+        if not self.group_counts_file.exists():
+            self.group_counts = {}
+            return
         try:
             content = self.group_counts_file.read_text("utf-8")
             self.group_counts = {str(k): v for k, v in json.loads(content).items()}
@@ -129,8 +137,11 @@ class SiliconflowPlugin(Star):
         return self.group_counts.get(str(group_id), 0)
 
     async def _decrease_group_count(self, group_id: str):
-        count = self._get_group_count(str(group_id))
-        if count > 0: self.group_counts[str(group_id)] = count - 1; await self._save_group_counts()
+        async with self.count_lock:
+            count = self._get_group_count(str(group_id))
+            if count > 0:
+                self.group_counts[str(group_id)] = count - 1
+                await self._save_group_counts()
 
     # --- 异步下载 ---
     async def _download_video_async(self, url: str) -> Optional[str]:
@@ -155,7 +166,7 @@ class SiliconflowPlugin(Star):
     @filter.command("视频增加用户次数", prefix_optional=True)
     async def on_add_user_counts(self, event: AstrMessageEvent):
         if not self.is_global_admin(event): return
-        match = re.search(r"(\d+)\s+(\d+)", event.message_str.strip())
+        match = re.fullmatch(r"(\d+)\s+(\d+)", event.message_str.strip())
         if not match: yield event.plain_result('格式错误: #视频增加用户次数 <QQ号> <次数>'); return
         target_qq, count = match.group(1), int(match.group(2))
         current_count = self._get_user_count(target_qq)
@@ -166,7 +177,7 @@ class SiliconflowPlugin(Star):
     @filter.command("视频增加群组次数", prefix_optional=True)
     async def on_add_group_counts(self, event: AstrMessageEvent):
         if not self.is_global_admin(event): return
-        match = re.search(r"(\d+)\s+(\d+)", event.message_str.strip())
+        match = re.fullmatch(r"(\d+)\s+(\d+)", event.message_str.strip())
         if not match: yield event.plain_result('格式错误: #视频增加群组次数 <群号> <次数>'); return
         target_group, count = match.group(1), int(match.group(2))
         current_count = self._get_group_count(target_group)
@@ -261,32 +272,24 @@ class SiliconflowPlugin(Star):
 
     # --- 权限检查 ---
     async def _check_permissions(self, event: AstrMessageEvent) -> Tuple[bool, Optional[str]]:
-        if self.is_global_admin(event):
-            return True, None
-
+        if self.is_global_admin(event): return True, None
         sender_id = event.get_sender_id()
         group_id = event.get_group_id()
-
         if self.conf.get("user_blacklist", []) and sender_id in self.conf.get("user_blacklist", []): return False, None
         if group_id and self.conf.get("group_whitelist", []) and group_id not in self.conf.get("group_whitelist",
                                                                                                []): return False, None
         if self.conf.get("user_whitelist", []) and sender_id not in self.conf.get("user_whitelist", []):
             return False, "抱歉，您不在本功能的使用白名单中。"
-
         user_limit_on = self.conf.get("enable_user_limit", True)
         group_limit_on = self.conf.get("enable_group_limit", False) and group_id
         user_count = self._get_user_count(sender_id)
         group_count = self._get_group_count(group_id) if group_id else 0
         has_group_permission = not group_limit_on or group_count > 0
         has_user_permission = not user_limit_on or user_count > 0
-
         if group_id:
-            if not has_group_permission and not has_user_permission:
-                return False, "❌ 本群次数与您的个人次数均已用尽，请联系管理员补充。"
+            if not has_group_permission and not has_user_permission: return False, "❌ 本群次数与您的个人次数均已用尽，请联系管理员补充。"
         else:
-            if not has_user_permission:
-                return False, "❌ 您的使用次数已用完，请联系管理员补充。"
-
+            if not has_user_permission: return False, "❌ 您的使用次数已用完，请联系管理员补充。"
         return True, None
 
     # --- 核心指令 ---
@@ -330,15 +333,30 @@ class SiliconflowPlugin(Star):
         yield event.plain_result("✅ 下载完成，正在发送文件...")
 
         if not self.is_global_admin(event):
-            if self.conf.get("enable_user_limit", True) and self._get_user_count(sender_id) > 0:
-                await self._decrease_user_count(sender_id)
-            elif self.conf.get("enable_group_limit", False) and group_id and self._get_group_count(group_id) > 0:
+            if self.conf.get("enable_group_limit", False) and group_id and self._get_group_count(group_id) > 0:
                 await self._decrease_group_count(group_id)
+            elif self.conf.get("enable_user_limit", True) and self._get_user_count(sender_id) > 0:
+                await self._decrease_user_count(sender_id)
 
         try:
             video_component = Comp.Video.fromFileSystem(path=filepath, name="generated_video.mp4")
-            yield event.chain_result([video_component])
-            yield event.plain_result(f"🎬 视频文件已发送！\n下载链接：{video_url}")
+
+            # 构建附加的文本信息
+            caption_parts = []
+            if self.is_global_admin(event):
+                caption_parts.append("剩余次数: ∞")
+            else:
+                if self.conf.get("enable_user_limit", True):
+                    caption_parts.append(f"个人剩余: {self._get_user_count(sender_id)}")
+                if self.conf.get("enable_group_limit", False) and group_id:
+                    caption_parts.append(f"本群剩余: {self._get_group_count(group_id)}")
+
+            caption_text = f"🎬 视频文件已发送！\n下载链接：{video_url}"
+            if caption_parts:
+                caption_text += "\n\n" + " | ".join(caption_parts)
+
+            yield event.chain_result([video_component, Comp.Plain(caption_text)])
+
         except Exception as e:
             logger.error(f"发送文件时失败: {e}", exc_info=True)
             yield event.plain_result(f"🎬 文件发送失败，请点击链接下载：\n{video_url}")
@@ -346,14 +364,3 @@ class SiliconflowPlugin(Star):
             if await aiofiles.os.path.exists(filepath):
                 await aiofiles.os.remove(filepath)
                 logger.info(f"已清理临时文件: {filepath}")
-
-        caption_parts = []
-        is_master = self.is_global_admin(event)
-        if is_master:
-            caption_parts.append("剩余次数: ∞")
-        else:
-            if self.conf.get("enable_user_limit", True): caption_parts.append(
-                f"个人剩余: {self._get_user_count(sender_id)}")
-            if self.conf.get("enable_group_limit", False) and group_id: caption_parts.append(
-                f"本群剩余: {self._get_group_count(group_id)}")
-        if caption_parts: yield event.plain_result(" | ".join(caption_parts))
