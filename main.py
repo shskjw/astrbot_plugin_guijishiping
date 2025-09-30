@@ -7,7 +7,7 @@ import uuid
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 
 import aiohttp
 import aiofiles
@@ -50,17 +50,28 @@ class SiliconflowPlugin(Star):
                 return base64.b64decode(src[9:])
             return None
 
+        # 【修复 1】创建辅助函数以减少重复
+        async def _find_image_in_segments(self, segments: List[Any]) -> Optional[bytes]:
+            """在消息段列表中查找并加载第一个图片"""
+            for seg in segments:
+                if isinstance(seg, Comp.Image):
+                    if seg.url and (img := await self._load_bytes(seg.url)):
+                        return img
+                    if seg.file and (img := await self._load_bytes(seg.file)):
+                        return img
+            return None
+
         async def get_image_from_event(self, event: AstrMessageEvent) -> Optional[bytes]:
+            # 首先检查回复链中的图片
             for seg in event.message_obj.message:
                 if isinstance(seg, Comp.Reply) and seg.chain:
-                    for s_chain in seg.chain:
-                        if isinstance(s_chain, Comp.Image):
-                            if s_chain.url and (img := await self._load_bytes(s_chain.url)): return img
-                            if s_chain.file and (img := await self._load_bytes(s_chain.file)): return img
-            for seg in event.message_obj.message:
-                if isinstance(seg, Comp.Image):
-                    if seg.url and (img := await self._load_bytes(seg.url)): return img
-                    if seg.file and (img := await self._load_bytes(seg.file)): return img
+                    if image_bytes := await self._find_image_in_segments(seg.chain):
+                        return image_bytes
+
+            # 然后检查当前消息中的图片
+            if image_bytes := await self._find_image_in_segments(event.message_obj.message):
+                return image_bytes
+
             return None
 
         async def terminate(self):
@@ -90,67 +101,61 @@ class SiliconflowPlugin(Star):
         if not self.conf.get("api_keys"):
             logger.warning("[SiliconFlow] 未配置任何 API 密钥，插件无法工作")
 
-    # --- 次数管理 ---
-    async def _load_user_counts(self):
-        if not await aiofiles.os.path.exists(self.user_counts_file):
-            self.user_counts = {}
-            return
+    # --- 次数管理 (重构) ---
+
+    async def _load_counts(self, file_path: Path) -> Dict[str, int]:
+        if not await aiofiles.os.path.exists(file_path):
+            return {}
         try:
-            async with aiofiles.open(self.user_counts_file, mode='r', encoding='utf-8') as f:
+            async with aiofiles.open(file_path, mode='r', encoding='utf-8') as f:
                 content = await f.read()
-            self.user_counts = {str(k): v for k, v in json.loads(content).items()}
+            return {str(k): v for k, v in json.loads(content).items()}
         except Exception as e:
-            logger.error(f"加载用户次数文件时发生错误: {e}", exc_info=True)
-            self.user_counts = {}
+            logger.error(f"加载计数文件 {file_path.name} 时发生错误: {e}", exc_info=True)
+            return {}
+
+    async def _save_counts(self, file_path: Path, data: Dict[str, int]):
+        try:
+            async with aiofiles.open(file_path, mode='w', encoding='utf-8') as f:
+                await f.write(json.dumps(data, ensure_ascii=False, indent=4))
+        except Exception as e:
+            logger.error(f"保存计数文件 {file_path.name} 时发生错误: {e}", exc_info=True)
+
+    async def _load_user_counts(self):
+        self.user_counts = await self._load_counts(self.user_counts_file)
 
     async def _save_user_counts(self):
-        try:
-            async with aiofiles.open(self.user_counts_file, mode='w', encoding='utf-8') as f:
-                await f.write(json.dumps(self.user_counts, ensure_ascii=False, indent=4))
-        except Exception as e:
-            logger.error(f"保存用户次数文件时发生错误: {e}", exc_info=True)
+        await self._save_counts(self.user_counts_file, self.user_counts)
 
     def _get_user_count(self, user_id: str) -> int:
-        return self.user_counts.get(user_id, 0)  # 【修复 3】移除冗余的 str()
+        return self.user_counts.get(user_id, 0)
 
     async def _decrease_user_count(self, user_id: str):
         async with self.count_lock:
-            count = self._get_user_count(user_id)  # 【修复 3】移除冗余的 str()
+            count = self._get_user_count(user_id)
             if count > 0:
-                self.user_counts[user_id] = count - 1  # 【修复 3】移除冗余的 str()
+                self.user_counts[user_id] = count - 1
                 await self._save_user_counts()
 
     async def _load_group_counts(self):
-        if not await aiofiles.os.path.exists(self.group_counts_file):
-            self.group_counts = {}
-            return
-        try:
-            async with aiofiles.open(self.group_counts_file, mode='r', encoding='utf-8') as f:
-                content = await f.read()
-            self.group_counts = {str(k): v for k, v in json.loads(content).items()}
-        except Exception as e:
-            logger.error(f"加载群组次数文件时发生错误: {e}", exc_info=True)
-            self.group_counts = {}
+        self.group_counts = await self._load_counts(self.group_counts_file)
 
     async def _save_group_counts(self):
-        try:
-            async with aiofiles.open(self.group_counts_file, mode='w', encoding='utf-8') as f:
-                await f.write(json.dumps(self.group_counts, ensure_ascii=False, indent=4))
-        except Exception as e:
-            logger.error(f"保存群组次数文件时发生错误: {e}", exc_info=True)
+        await self._save_counts(self.group_counts_file, self.group_counts)
 
     def _get_group_count(self, group_id: str) -> int:
-        return self.group_counts.get(group_id, 0)  # 【修复 3】移除冗余的 str()
+        return self.group_counts.get(group_id, 0)
 
     async def _decrease_group_count(self, group_id: str):
         async with self.count_lock:
-            count = self._get_group_count(group_id)  # 【修复 3】移除冗余的 str()
+            count = self._get_group_count(group_id)
             if count > 0:
-                self.group_counts[group_id] = count - 1  # 【修复 3】移除冗余的 str()
+                self.group_counts[group_id] = count - 1
                 await self._save_group_counts()
 
     # --- 异步下载 ---
     async def _download_video_async(self, url: str) -> Optional[str]:
+        # (此函数无需修改)
         filename = f"siliconflow_video_{uuid.uuid4()}.mp4"
         filepath = str(self.plugin_data_dir / filename)
         logger.info(f"开始异步下载视频到: {filepath}")
@@ -176,7 +181,7 @@ class SiliconflowPlugin(Star):
         if not match: yield event.plain_result('格式错误: #视频增加用户次数 <QQ号> <次数>'); return
         target_qq, count = match.group(1), int(match.group(2))
         current_count = self._get_user_count(target_qq)
-        self.user_counts[target_qq] = current_count + count  # 【修复 3】移除冗余的 str()
+        self.user_counts[target_qq] = current_count + count
         await self._save_user_counts()
         yield event.plain_result(f"✅ 已为用户 {target_qq} 增加 {count} 次，TA当前剩余 {current_count + count} 次。")
 
@@ -187,7 +192,7 @@ class SiliconflowPlugin(Star):
         if not match: yield event.plain_result('格式错误: #视频增加群组次数 <群号> <次数>'); return
         target_group, count = match.group(1), int(match.group(2))
         current_count = self._get_group_count(target_group)
-        self.group_counts[target_group] = current_count + count  # 【修复 3】移除冗余的 str()
+        self.group_counts[target_group] = current_count + count
         await self._save_group_counts()
         yield event.plain_result(f"✅ 已为群组 {target_group} 增加 {count} 次，该群当前剩余 {current_count + count} 次。")
 
@@ -220,6 +225,7 @@ class SiliconflowPlugin(Star):
     # --- API 调用 ---
     async def _submit_task(self, prompt: str, image_bytes: Optional[bytes], num_frames: int) -> Tuple[
         Optional[str], str]:
+        # (此函数无需修改)
         api_url = self.conf.get("api_url", "https://api.siliconflow.cn")
         api_key = await self._get_api_key()
         if not api_key: return None, "无可用的 API Key"
@@ -242,15 +248,15 @@ class SiliconflowPlugin(Star):
 
     async def _poll_for_result(self, request_id: str) -> Tuple[Optional[str], str]:
         api_key = await self._get_api_key()
-        if not api_key:
-            return None, "无可用的 API Key"
+        if not api_key: return None, "无可用的 API Key"
 
         api_url = self.conf.get("api_url", "https://api.siliconflow.cn")
         timeout = self.conf.get("polling_timeout", 300)
         interval = self.conf.get("polling_interval", 5)
-        start_time = time.time()
 
-        while time.time() - start_time < timeout:
+        start_time = time.monotonic()
+
+        while time.monotonic() - start_time < timeout:
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
             payload = {"requestId": request_id}
             try:
@@ -259,7 +265,12 @@ class SiliconflowPlugin(Star):
                     if resp.status != 200: await asyncio.sleep(interval); continue
                     data = await resp.json()
                     status = data.get("status")
-                    if status in ["Succeed", "completed"]:
+
+                    if not status: await asyncio.sleep(interval); continue
+
+                    # 【修复 3】将状态转换为小写进行比较
+                    status_lower = status.lower()
+                    if status_lower in ["succeed", "completed"]:
                         video_url = None
                         if results := data.get("results"):
                             if videos := results.get("videos"):
@@ -271,8 +282,9 @@ class SiliconflowPlugin(Star):
                         else:
                             logger.error(
                                 f"[SiliconFlow] 成功响应但未找到视频链接: {json.dumps(data)}"); return None, "成功响应但未找到视频链接"
-                    elif status in ["Failed", "failed"]:
+                    elif status_lower in ["failed"]:
                         return None, f"任务生成失败: {data.get('reason', data.get('error', '未知错误'))}"
+
                     await asyncio.sleep(interval)
             except Exception as e:
                 logger.warning(f"[SiliconFlow] 轮询状态时发生异常: {e}", exc_info=True)
@@ -281,6 +293,7 @@ class SiliconflowPlugin(Star):
 
     # --- 权限检查 ---
     async def _check_permissions(self, event: AstrMessageEvent) -> Tuple[bool, Optional[str]]:
+        # (此函数无需修改)
         if self.is_global_admin(event): return True, None
         sender_id = event.get_sender_id()
         group_id = event.get_group_id()
