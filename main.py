@@ -24,7 +24,7 @@ from astrbot.core.platform.astr_message_event import AstrMessageEvent
 class SiliconflowPlugin(Star):
     """
     astrbot_plugin_guijishiping by shskjw
-    Version: 2.0.1 (Refactored with lmarena style & custom send logic)
+    Version: 1.1.0 (Refactored with lmarena style & custom send logic)
     Description: 硅基流动api视频，可以制作动态壁纸之类的
     """
 
