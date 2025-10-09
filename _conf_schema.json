@@ -1,77 +1,31 @@
 {
-    "api_url": {
-        "description": "SiliconFlow API 的 URL 地址",
-        "type": "string",
-        "hint": "默认为官方地址",
-        "default": "https://api.siliconflow.cn"
-    },
-    "api_keys": {
-        "description": "SiliconFlow API 密钥列表",
+    "api_url": { "description": "SiliconFlow API 的 URL", "type": "string", "default": "https://api.siliconflow.cn" },
+    "api_keys": { "description": "API 密钥列表", "type": "list", "items": { "type": "string" }, "default": [] },
+    "default_model": { "description": "默认视频生成模型", "type": "string", "default": "stabilityai/stable-video-diffusion-img2vid-xt" },
+    "prefix": { "description": "【重要】指令是否必须带前缀", "type": "bool", "hint": "开启后，需用#或@机器人触发，避免误触。", "default": true },
+    "extra_prefix": { "description": "自定义提示词的指令前缀", "hint": "例如设置为 '生成视频'，则用 '#生成视频 <你的prompt>' 来调用", "type": "string", "default": "生成视频" },
+    "use_proxy": { "description": "是否启用网络代理", "type": "bool", "default": false },
+    "proxy_url": { "description": "网络代理地址 (http://...)", "type": "string", "default": "" },
+    "user_whitelist": { "description": "【权限】用户白名单", "type": "list", "items": { "type": "string" }, "default": [] },
+    "user_blacklist": { "description": "【权限】用户黑名单", "type": "list", "items": { "type": "string" }, "default": [] },
+    "group_whitelist": { "description": "【权限】群聊白名单", "type": "list", "items": { "type": "string" }, "default": [] },
+    "group_blacklist": { "description": "【权限】群聊黑名单", "type": "list", "items": { "type": "string" }, "default": [] },
+    "enable_user_limit": { "description": "【次数】是否启用用户次数限制", "type": "bool", "default": true },
+    "enable_group_limit": { "description": "【次数】是否启用群组次数限制", "type": "bool", "default": false },
+    "enable_checkin": { "description": "【签到】是否开启每日签到", "type": "bool", "default": true },
+    "checkin_fixed_reward": { "description": "【签到】固定签到奖励次数", "type": "int", "default": 3 },
+    "enable_random_checkin": { "description": "【签到】是否开启随机签到奖励", "type": "bool", "default": false },
+    "checkin_random_reward_max": { "description": "【签到】随机签到奖励最大值", "type": "int", "default": 5 },
+    "default_seconds": { "description": "【高级】默认生成的视频秒数", "type": "int", "default": 4 },
+    "default_fps": { "description": "【高级】默认视频帧率 (FPS)", "type": "int", "default": 8 },
+    "polling_interval": { "description": "【高级】任务状态轮询间隔（秒）", "type": "int", "default": 5 },
+    "polling_timeout": { "description": "【高级】任务超时时间（秒）", "type": "int", "default": 300 },
+    "prompt_list": {
+        "description": "【核心】指令预设列表",
+        "hint": "格式为 触发词:提示词。使用 #视频添加预设 来动态管理。",
         "type": "list",
-        "hint": "可以填写多个，插件会自动轮换使用。使用 #视频增加key 等命令进行管理。",
-        "items": { "type": "string", "description": "API 密钥" },
-        "default": []
-    },
-    "default_model": {
-        "description": "默认使用的视频生成模型",
-        "type": "string",
-        "hint": "例如：Wan-AI/Wan2.2-I2V-A14B",
-        "default": "Wan-AI/Wan2.2-I2V-A14B"
-    },
-    "use_proxy": {
-        "description": "是否启用网络代理",
-        "type": "bool",
-        "default": false
-    },
-    "proxy_url": {
-        "description": "网络代理地址",
-        "type": "string",
-        "hint": "格式为 http://user:pass@host:port",
-        "default": ""
-    },
-    "enable_user_limit": {
-        "description": "【次数限制】是否启用【用户】次数限制",
-        "type": "bool",
-        "default": true
-    },
-    "enable_group_limit": {
-        "description": "【次数限制】是否启用【群组】次数限制",
-        "type": "bool",
-        "default": false
-    },
-    "polling_interval": {
-        "description": "【高级】任务状态轮询间隔（秒）",
-        "type": "int",
-        "default": 5
-    },
-    "polling_timeout": {
-        "description": "【高级】任务超时时间（秒）",
-        "type": "int",
-        "default": 300
-    },
-    "default_fps": {
-        "description": "【高级】计算视频帧数时使用的默认帧率 (FPS)",
-        "type": "int",
-        "hint": "注意：提高此值会显著增加生成视频所需的总帧数，请确保所选模型支持。大多数模型原生FPS较低 (如8-16)。",
-        "default": 8
-    },
-    "user_whitelist": {
-        "description": "【权限】用户白名单",
-        "type": "list",
-        "items": { "type": "string", "description": "用户QQ号" },
-        "default": []
-    },
-    "user_blacklist": {
-        "description": "【权限】用户黑名单",
-        "type": "list",
-        "items": { "type": "string", "description": "用户QQ号" },
-        "default": []
-    },
-    "group_whitelist": {
-        "description": "【权限】群聊白名单",
-        "type": "list",
-        "items": { "type": "string", "description": "群号" },
-        "default": []
-    }
+        "default": [
 
+        ]
+    }
 }
