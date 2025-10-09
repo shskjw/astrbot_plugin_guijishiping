@@ -1,7 +1,7 @@
 {
     "api_url": { "description": "SiliconFlow API 的 URL", "type": "string", "default": "https://api.siliconflow.cn" },
     "api_keys": { "description": "API 密钥列表", "type": "list", "items": { "type": "string" }, "default": [] },
-    "default_model": { "description": "默认视频生成模型", "type": "string", "default": "stabilityai/stable-video-diffusion-img2vid-xt" },
+    "default_model": { "description": "默认视频生成模型", "type": "string", "default": "Wan-AI/Wan2.2-I2V-A14B" },
     "prefix": { "description": "【重要】指令是否必须带前缀", "type": "bool", "hint": "开启后，需用#或@机器人触发，避免误触。", "default": true },
     "extra_prefix": { "description": "自定义提示词的指令前缀", "hint": "例如设置为 '生成视频'，则用 '#生成视频 <你的prompt>' 来调用", "type": "string", "default": "生成视频" },
     "use_proxy": { "description": "是否启用网络代理", "type": "bool", "default": false },
@@ -29,3 +29,4 @@
         ]
     }
 }
+
